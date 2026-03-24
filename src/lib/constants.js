@@ -112,3 +112,22 @@ export function fmtTime(totalMin) {
   const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
   return `${h12}:${m.toString().padStart(2, "0")} ${ampm}`;
 }
+
+/** Ensure a task's lists array always includes "master" and applies auto-rules */
+export function normalizeLists(lists) {
+  const arr = Array.isArray(lists) ? [...lists] : lists ? [lists] : ["master"];
+  if (!arr.includes("master")) arr.push("master");
+  // Next Up auto-adds to Today
+  if (arr.includes("next_up") && !arr.includes("today")) arr.push("today");
+  return [...new Set(arr)];
+}
+
+/** Migrate a task from old single-list to new multi-list format */
+export function migrateTask(task) {
+  if (task.lists && Array.isArray(task.lists) && task.lists.length > 0) {
+    return { ...task, lists: normalizeLists(task.lists) };
+  }
+  // Old format: single "list" string
+  const lists = normalizeLists(task.list ? [task.list] : ["master"]);
+  return { ...task, lists };
+}

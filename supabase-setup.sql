@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   text TEXT NOT NULL,
   list TEXT NOT NULL DEFAULT 'master',
+  lists JSONB DEFAULT '["master"]'::jsonb,
   category TEXT DEFAULT 'personal',
   done BOOLEAN DEFAULT FALSE,
   added_date TEXT,
@@ -86,7 +87,23 @@ CREATE INDEX IF NOT EXISTS idx_routine_logs_item_date ON routine_logs(item_id, d
 CREATE INDEX IF NOT EXISTS idx_chat_history_created ON chat_history(created_at);
 
 -- ═══════════════════════════════════════════
--- Row Level Security (RLS) - disable for single-user app
+-- Migration: Add lists column if not exists
+-- ═══════════════════════════════════════════
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'tasks' AND column_name = 'lists'
+  ) THEN
+    ALTER TABLE tasks ADD COLUMN lists JSONB DEFAULT '["master"]'::jsonb;
+    -- Migrate existing data
+    UPDATE tasks SET lists = jsonb_build_array(list, 'master')
+    WHERE lists IS NULL OR lists = '["master"]'::jsonb;
+  END IF;
+END $$;
+
+-- ═══════════════════════════════════════════
+-- Row Level Security (RLS) - allow all for single-user app
 -- ═══════════════════════════════════════════
 ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE habits ENABLE ROW LEVEL SECURITY;

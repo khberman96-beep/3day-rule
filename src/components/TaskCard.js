@@ -1,20 +1,30 @@
 "use client";
 
-import { CATEGORIES, staleness } from "@/lib/constants";
+import { CATEGORIES, LIST_META, staleness } from "@/lib/constants";
 
-export default function TaskCard({ task, onToggle }) {
+export default function TaskCard({ task, onToggle, draggable }) {
   const cat = CATEGORIES.find((c) => c.id === task.category);
   const stale = staleness(task.added_date);
+
+  const handleDragStart = (e) => {
+    e.dataTransfer.setData("application/json", JSON.stringify({ id: task.id, text: task.text }));
+    e.dataTransfer.effectAllowed = "copy";
+  };
+
+  // Show which lists this task is on (excluding master and current column)
+  const otherLists = (task.lists || []).filter((l) => l !== "master");
 
   return (
     <div
       className="task-card animate-fade-in"
+      draggable={draggable}
+      onDragStart={draggable ? handleDragStart : undefined}
       style={{
         background: "#1e293b",
         borderRadius: 8,
         padding: "8px 10px",
         marginBottom: 4,
-        cursor: "pointer",
+        cursor: draggable ? "grab" : "pointer",
         opacity: task.done ? 0.5 : 1,
       }}
       onClick={() => onToggle(task.id)}
@@ -103,6 +113,20 @@ export default function TaskCard({ task, onToggle }) {
                 }}
               >
                 🔄 {task.recurring === "daily" ? "Daily" : "2x/wk"}
+              </span>
+            )}
+            {/* Show list badges */}
+            {otherLists.length > 1 && (
+              <span
+                style={{
+                  fontSize: 10,
+                  padding: "1px 6px",
+                  borderRadius: 4,
+                  background: "#8B5CF620",
+                  color: "#8B5CF6",
+                }}
+              >
+                📋 {otherLists.length} lists
               </span>
             )}
           </div>

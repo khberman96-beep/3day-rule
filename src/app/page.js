@@ -9,6 +9,7 @@ import {
   SIGNAL_REMINDER,
   uid,
   getToday,
+  normalizeLists,
 } from "@/lib/constants";
 import {
   loadTasks, upsertTask, deleteTask as dbDeleteTask, bulkUpsertTasks,
@@ -18,7 +19,7 @@ import {
   loadRoutineLogs, toggleRoutineLog,
   loadTimebox, saveTimebox as dbSaveTimebox,
   loadSettings, saveSettings,
-  loadChatHistory, addChatMessage,
+  loadChatHistory, addChatMessage, clearChatHistory,
 } from "@/lib/db";
 import { buildSystemPrompt } from "@/lib/systemPrompt";
 import TaskCard from "@/components/TaskCard";
@@ -62,30 +63,32 @@ export default function Home() {
 
         const savedSettings = s || { wakeUp: "06:00", recurringDays: { callParents: [2, 0] } };
 
-        // Day rollover — check last_date on tasks
+        // Day rollover
         const lastDate = savedSettings.lastDate || today;
         if (lastDate !== today) {
-          // Move uncompleted "today" to "tomorrow" with from_yesterday flag
           const updates = [];
           t = t.map((item) => {
-            if (item.list === "today" && !item.done) {
-              const updated = { ...item, list: "tomorrow", from_yesterday: true };
+            const lists = item.lists || ["master"];
+            // Move uncompleted "today" tasks to "tomorrow"
+            if (lists.includes("today") && !item.done) {
+              const newLists = normalizeLists(
+                lists.filter((l) => l !== "today" && l !== "next_up").concat("tomorrow")
+              );
+              const updated = { ...item, lists: newLists, from_yesterday: true };
               updates.push(updated);
               return updated;
             }
             return item;
           });
           // Remove completed tasks
-          const completedIds = t.filter((i) => i.done).map((i) => i.id);
           t = t.filter((i) => !i.done);
-          // Bulk update
           if (updates.length > 0) await bulkUpsertTasks(updates);
 
           // Add recurring: Work Out
-          if (!t.some((i) => i.text === "Work Out" && i.list === "today")) {
+          if (!t.some((i) => i.text === "Work Out" && (i.lists || []).includes("today"))) {
             const workout = {
-              id: uid(), text: "Work Out", list: "today", category: "health",
-              done: false, added_date: today, recurring: "daily",
+              id: uid(), text: "Work Out", lists: normalizeLists(["today"]),
+              category: "health", done: false, added_date: today, recurring: "daily",
             };
             t.push(workout);
             await upsertTask(workout);
@@ -95,10 +98,10 @@ export default function Home() {
           const dow = new Date().getDay();
           const parentDays = savedSettings.recurringDays?.callParents || [2, 0];
           if (parentDays.includes(dow)) {
-            if (!t.some((i) => i.text === "Call Parents" && i.list === "today")) {
+            if (!t.some((i) => i.text === "Call Parents" && (i.lists || []).includes("today"))) {
               const call = {
-                id: uid(), text: "Call Parents", list: "today", category: "social",
-                done: false, added_date: today, recurring: "twice_weekly",
+                id: uid(), text: "Call Parents", lists: normalizeLists(["today"]),
+                category: "social", done: false, added_date: today, recurring: "twice_weekly",
               };
               t.push(call);
               await upsertTask(call);
@@ -127,7 +130,7 @@ export default function Home() {
         setInitialized(true);
       } catch (err) {
         console.error("Init error:", err);
-        setInitialized(true); // Still show UI
+        setInitialized(true);
       }
     })();
   }, []);
@@ -158,18 +161,12 @@ export default function Home() {
       }
       return prev.filter((l) => !(l.habit_id === habitId && l.date === date));
     });
-    // Update streak
     const streak = await getHabitStreak(habitId);
     setStreaks((prev) => ({ ...prev, [habitId]: streak }));
   }, []);
 
   const handleAddHabit = useCallback(async (name, icon) => {
-    const habit = {
-      id: uid(),
-      name,
-      icon,
-      sort_order: habits.length,
-    };
+    const habit = { id: uid(), name, icon, sort_order: habits.length };
     await upsertHabit(habit);
     setHabits((prev) => [...prev, habit]);
   }, [habits]);
@@ -195,10 +192,7 @@ export default function Home() {
 
   const handleAddRoutine = useCallback(async (name, icon, duration) => {
     const item = {
-      id: uid(),
-      name,
-      icon,
-      duration_min: duration,
+      id: uid(), name, icon, duration_min: duration,
       sort_order: routineItems.length,
     };
     await upsertRoutineItem(item);
@@ -210,6 +204,12 @@ export default function Home() {
     setRoutineItems((prev) => prev.filter((r) => r.id !== id));
   }, []);
 
+  // ── TIMEBOX UPDATE ──
+  const handleUpdateTimebox = useCallback(async (updated) => {
+    setTimebox(updated);
+    await dbSaveTimebox(updated);
+  }, []);
+
   // ── CHAT ──
   const processCommands = useCallback(
     async (cmds) => {
@@ -218,110 +218,145 @@ export default function Home() {
       let updatedHabits = [...habits];
       let updatedRoutine = [...routineItems];
       let updatedSettings = { ...settings };
+      const errors = [];
 
       for (const cmd of cmds) {
-        switch (cmd.action) {
-          case "add": {
-            const newTask = {
-              id: uid(),
-              text: cmd.text,
-              list: cmd.list || "master",
-              category: cmd.category || "personal",
-              done: false,
-              added_date: getToday(),
-              from_yesterday: false,
-            };
-            updatedTasks.push(newTask);
-            await upsertTask(newTask);
-            break;
-          }
-          case "complete": {
-            updatedTasks = updatedTasks.map((i) =>
-              i.id === cmd.id
-                ? { ...i, done: true, completed_date: getToday() }
-                : i
-            );
-            const t = updatedTasks.find((i) => i.id === cmd.id);
-            if (t) await upsertTask(t);
-            break;
-          }
-          case "uncomplete": {
-            updatedTasks = updatedTasks.map((i) =>
-              i.id === cmd.id ? { ...i, done: false, completed_date: null } : i
-            );
-            const t = updatedTasks.find((i) => i.id === cmd.id);
-            if (t) await upsertTask(t);
-            break;
-          }
-          case "move": {
-            updatedTasks = updatedTasks.map((i) =>
-              i.id === cmd.id ? { ...i, list: cmd.to } : i
-            );
-            const t = updatedTasks.find((i) => i.id === cmd.id);
-            if (t) await upsertTask(t);
-            break;
-          }
-          case "delete": {
-            await dbDeleteTask(cmd.id);
-            updatedTasks = updatedTasks.filter((i) => i.id !== cmd.id);
-            break;
-          }
-          case "edit": {
-            updatedTasks = updatedTasks.map((i) =>
-              i.id === cmd.id ? { ...i, text: cmd.text } : i
-            );
-            const t = updatedTasks.find((i) => i.id === cmd.id);
-            if (t) await upsertTask(t);
-            break;
-          }
-          case "add_habit": {
-            const h = { id: uid(), name: cmd.name, icon: cmd.icon || "✅", sort_order: updatedHabits.length };
-            updatedHabits.push(h);
-            await upsertHabit(h);
-            break;
-          }
-          case "remove_habit": {
-            await dbDeleteHabit(cmd.id);
-            updatedHabits = updatedHabits.filter((h) => h.id !== cmd.id);
-            break;
-          }
-          case "add_routine": {
-            const r = { id: uid(), name: cmd.name, icon: cmd.icon || "☀️", duration_min: cmd.duration_min || 5, sort_order: updatedRoutine.length };
-            updatedRoutine.push(r);
-            await upsertRoutineItem(r);
-            break;
-          }
-          case "remove_routine": {
-            await dbDeleteRoutineItem(cmd.id);
-            updatedRoutine = updatedRoutine.filter((r) => r.id !== cmd.id);
-            break;
-          }
-          case "timebox": {
-            updatedTimebox = {
-              date: cmd.date || getToday(),
-              wake_up: cmd.wakeUp || settings.wakeUp,
-              blocks: (cmd.blocks || []).map((b) => ({
-                label: b.label,
-                tasks: (b.taskIds || [])
-                  .map((id) => updatedTasks.find((t) => t.id === id))
-                  .filter(Boolean)
-                  .map((t) => ({ id: t.id, text: t.text })),
-                notes: b.notes || "",
-              })),
-            };
-            await dbSaveTimebox(updatedTimebox);
-            break;
-          }
-          case "set_recurring": {
-            if (cmd.task === "callParents") {
-              updatedSettings.recurringDays = {
-                ...updatedSettings.recurringDays,
-                callParents: cmd.days,
+        try {
+          switch (cmd.action) {
+            case "add": {
+              const lists = normalizeLists(cmd.lists || cmd.list || "master");
+              const newTask = {
+                id: uid(),
+                text: cmd.text,
+                lists,
+                category: cmd.category || "personal",
+                done: false,
+                added_date: getToday(),
+                from_yesterday: false,
               };
-              await saveSettings(updatedSettings);
+              updatedTasks.push(newTask);
+              await upsertTask(newTask);
+              break;
             }
-            break;
+            case "complete": {
+              const found = updatedTasks.find((i) => i.id === cmd.id);
+              if (!found) { errors.push(`Task ${cmd.id} not found`); break; }
+              updatedTasks = updatedTasks.map((i) =>
+                i.id === cmd.id
+                  ? { ...i, done: true, completed_date: getToday() }
+                  : i
+              );
+              const t = updatedTasks.find((i) => i.id === cmd.id);
+              if (t) await upsertTask(t);
+              break;
+            }
+            case "uncomplete": {
+              const found = updatedTasks.find((i) => i.id === cmd.id);
+              if (!found) { errors.push(`Task ${cmd.id} not found`); break; }
+              updatedTasks = updatedTasks.map((i) =>
+                i.id === cmd.id ? { ...i, done: false, completed_date: null } : i
+              );
+              const t = updatedTasks.find((i) => i.id === cmd.id);
+              if (t) await upsertTask(t);
+              break;
+            }
+            case "move": {
+              const found = updatedTasks.find((i) => i.id === cmd.id);
+              if (!found) { errors.push(`Task ${cmd.id} not found`); break; }
+              // Support both new "lists" array and old "to" string
+              const newLists = cmd.lists
+                ? normalizeLists(cmd.lists)
+                : normalizeLists(cmd.to || "master");
+              updatedTasks = updatedTasks.map((i) =>
+                i.id === cmd.id ? { ...i, lists: newLists } : i
+              );
+              const t = updatedTasks.find((i) => i.id === cmd.id);
+              if (t) await upsertTask(t);
+              break;
+            }
+            case "delete": {
+              await dbDeleteTask(cmd.id);
+              updatedTasks = updatedTasks.filter((i) => i.id !== cmd.id);
+              break;
+            }
+            case "edit": {
+              const found = updatedTasks.find((i) => i.id === cmd.id);
+              if (!found) { errors.push(`Task ${cmd.id} not found`); break; }
+              updatedTasks = updatedTasks.map((i) =>
+                i.id === cmd.id ? { ...i, text: cmd.text } : i
+              );
+              const t = updatedTasks.find((i) => i.id === cmd.id);
+              if (t) await upsertTask(t);
+              break;
+            }
+            case "change_category": {
+              const found = updatedTasks.find((i) => i.id === cmd.id);
+              if (!found) { errors.push(`Task ${cmd.id} not found`); break; }
+              updatedTasks = updatedTasks.map((i) =>
+                i.id === cmd.id ? { ...i, category: cmd.category } : i
+              );
+              const t = updatedTasks.find((i) => i.id === cmd.id);
+              if (t) await upsertTask(t);
+              break;
+            }
+            case "add_habit": {
+              const h = { id: uid(), name: cmd.name, icon: cmd.icon || "✅", sort_order: updatedHabits.length };
+              updatedHabits.push(h);
+              await upsertHabit(h);
+              break;
+            }
+            case "remove_habit": {
+              await dbDeleteHabit(cmd.id);
+              updatedHabits = updatedHabits.filter((h) => h.id !== cmd.id);
+              break;
+            }
+            case "add_routine": {
+              const r = { id: uid(), name: cmd.name, icon: cmd.icon || "☀️", duration_min: cmd.duration_min || 5, sort_order: updatedRoutine.length };
+              updatedRoutine.push(r);
+              await upsertRoutineItem(r);
+              break;
+            }
+            case "remove_routine": {
+              await dbDeleteRoutineItem(cmd.id);
+              updatedRoutine = updatedRoutine.filter((r) => r.id !== cmd.id);
+              break;
+            }
+            case "timebox": {
+              updatedTimebox = {
+                date: cmd.date || getToday(),
+                wake_up: cmd.wakeUp || settings.wakeUp,
+                blocks: (cmd.blocks || []).map((b) => ({
+                  label: b.label,
+                  slots: b.slots || (b.taskIds || []).map((id) => {
+                    const task = updatedTasks.find((t) => t.id === id);
+                    return task ? { taskId: task.id, taskText: task.text } : null;
+                  }).concat(Array(SLOTS_PER_BLOCK).fill(null)).slice(0, 10),
+                  notes: b.notes || "",
+                })),
+              };
+              await dbSaveTimebox(updatedTimebox);
+              break;
+            }
+            case "set_recurring": {
+              if (cmd.task === "callParents") {
+                updatedSettings.recurringDays = {
+                  ...updatedSettings.recurringDays,
+                  callParents: cmd.days,
+                };
+                await saveSettings(updatedSettings);
+              }
+              break;
+            }
+            case "set_waketime": {
+              updatedSettings.wakeUp = cmd.time;
+              await saveSettings(updatedSettings);
+              break;
+            }
+            default:
+              errors.push(`Unknown action: ${cmd.action}`);
           }
+        } catch (err) {
+          errors.push(`Error processing ${cmd.action}: ${err.message}`);
         }
       }
 
@@ -330,6 +365,8 @@ export default function Home() {
       setHabits(updatedHabits);
       setRoutineItems(updatedRoutine);
       setSettings(updatedSettings);
+
+      return errors;
     },
     [tasks, timebox, habits, routineItems, settings]
   );
@@ -366,35 +403,56 @@ export default function Home() {
 
         if (jsonMatch) {
           try {
-            const cmds = JSON.parse(jsonMatch[1]);
-            const arr = Array.isArray(cmds) ? cmds : [cmds];
-            await processCommands(arr);
-            const actions = arr
-              .map((c) => {
-                if (c.action === "add") return `✅ Added "${c.text}" → ${LIST_META[c.list]?.label || c.list}`;
-                if (c.action === "complete") return `☑️ Marked complete`;
-                if (c.action === "move") return `📦 Moved → ${LIST_META[c.to]?.label || c.to}`;
-                if (c.action === "delete") return `🗑️ Removed`;
-                if (c.action === "edit") return `✏️ Edited`;
-                if (c.action === "timebox") return `📐 Time box updated`;
-                if (c.action === "set_recurring") return `🔄 Recurring days updated`;
-                if (c.action === "add_habit") return `🔁 Added habit: ${c.name}`;
-                if (c.action === "remove_habit") return `🔁 Removed habit`;
-                if (c.action === "add_routine") return `🌅 Added routine: ${c.name}`;
-                if (c.action === "remove_routine") return `🌅 Removed routine item`;
-                return `⚡ ${c.action}`;
-              })
-              .join("\n");
-            displayText += (displayText ? "\n\n" : "") + actions;
+            const parsed = JSON.parse(jsonMatch[1]);
+            const arr = Array.isArray(parsed) ? parsed : [parsed];
+
+            // Validate commands
+            const validActions = [
+              "add", "complete", "uncomplete", "move", "delete", "edit",
+              "change_category", "add_habit", "remove_habit", "add_routine",
+              "remove_routine", "timebox", "set_recurring", "set_waketime",
+            ];
+            const invalid = arr.filter((c) => !c.action || !validActions.includes(c.action));
+            if (invalid.length > 0) {
+              displayText += "\n\n⚠️ Some commands were invalid and skipped.";
+            }
+
+            const validCmds = arr.filter((c) => c.action && validActions.includes(c.action));
+            if (validCmds.length > 0) {
+              const errors = await processCommands(validCmds);
+              const actions = validCmds
+                .map((c) => {
+                  if (c.action === "add") return `✅ Added "${c.text}" → ${(c.lists || [c.list]).filter((l) => l !== "master").map((l) => LIST_META[l]?.label || l).join(", ")}`;
+                  if (c.action === "complete") return `☑️ Marked complete`;
+                  if (c.action === "move") return `📦 Moved → ${(c.lists || [c.to]).filter((l) => l !== "master").map((l) => LIST_META[l]?.label || l).join(", ")}`;
+                  if (c.action === "delete") return `🗑️ Removed`;
+                  if (c.action === "edit") return `✏️ Edited`;
+                  if (c.action === "change_category") return `🏷️ Category → ${c.category}`;
+                  if (c.action === "timebox") return `📐 Time box updated`;
+                  if (c.action === "set_recurring") return `🔄 Recurring days updated`;
+                  if (c.action === "set_waketime") return `⏰ Wake time → ${c.time}`;
+                  if (c.action === "add_habit") return `🔁 Added habit: ${c.name}`;
+                  if (c.action === "remove_habit") return `🔁 Removed habit`;
+                  if (c.action === "add_routine") return `🌅 Added routine: ${c.name}`;
+                  if (c.action === "remove_routine") return `🌅 Removed routine item`;
+                  return `⚡ ${c.action}`;
+                })
+                .join("\n");
+              displayText += (displayText ? "\n\n" : "") + actions;
+              if (errors.length > 0) {
+                displayText += "\n" + errors.map((e) => `⚠️ ${e}`).join("\n");
+              }
+            }
           } catch (e) {
             console.error("JSON parse error:", e);
+            displayText += "\n\n⚠️ Failed to parse AI commands. Try rephrasing your request.";
           }
         }
 
         setChatHistory((prev) => [...prev, { role: "assistant", content: displayText }]);
         await addChatMessage("assistant", displayText);
       } catch (err) {
-        const errMsg = `Error: ${err.message}. Check your connection and try again.`;
+        const errMsg = `⚠️ Error: ${err.message}. Check your connection and try again.`;
         setChatHistory((prev) => [...prev, { role: "assistant", content: errMsg }]);
       }
 
@@ -402,6 +460,11 @@ export default function Home() {
     },
     [tasks, habits, routineItems, timebox, settings, chatHistory, processCommands]
   );
+
+  const handleClearChat = useCallback(async () => {
+    await clearChatHistory();
+    setChatHistory([]);
+  }, []);
 
   // ── LOADING ──
   if (!initialized) {
@@ -539,7 +602,8 @@ export default function Home() {
             >
               {LISTS.map((listId) => {
                 const meta = LIST_META[listId];
-                const items = tasks.filter((t) => t.list === listId);
+                // Multi-list: filter tasks that include this list
+                const items = tasks.filter((t) => (t.lists || []).includes(listId));
                 const isMaster = listId === "master";
 
                 return (
@@ -706,7 +770,12 @@ export default function Home() {
           )}
 
           {activeTab === "timebox" && (
-            <TimeboxView timebox={timebox} settings={settings} />
+            <TimeboxView
+              timebox={timebox}
+              settings={settings}
+              tasks={tasks}
+              onUpdateTimebox={handleUpdateTimebox}
+            />
           )}
         </div>
 
@@ -714,9 +783,12 @@ export default function Home() {
         <ChatPanel
           chatHistory={chatHistory}
           onSend={handleSendMessage}
+          onClear={handleClearChat}
           isLoading={isLoading}
         />
       </div>
     </div>
   );
 }
+
+const SLOTS_PER_BLOCK = 10;

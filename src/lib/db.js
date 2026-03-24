@@ -1,5 +1,5 @@
 import { supabase } from "./supabase";
-import { uid, getToday } from "./constants";
+import { uid, getToday, migrateTask } from "./constants";
 
 // ═══════════════════════════════════════════
 // TASKS
@@ -13,11 +13,15 @@ export async function loadTasks() {
     console.error("Load tasks error:", error);
     return [];
   }
-  return data || [];
+  // Migrate all tasks to multi-list format
+  return (data || []).map(migrateTask);
 }
 
 export async function upsertTask(task) {
-  const { error } = await supabase.from("tasks").upsert(task, { onConflict: "id" });
+  // Always save with lists array, keep list for backward compat
+  const primaryList = (task.lists || []).find((l) => l !== "master") || "master";
+  const toSave = { ...task, list: primaryList };
+  const { error } = await supabase.from("tasks").upsert(toSave, { onConflict: "id" });
   if (error) console.error("Upsert task error:", error);
 }
 
@@ -28,7 +32,11 @@ export async function deleteTask(id) {
 
 export async function bulkUpsertTasks(tasks) {
   if (tasks.length === 0) return;
-  const { error } = await supabase.from("tasks").upsert(tasks, { onConflict: "id" });
+  const toSave = tasks.map((task) => {
+    const primaryList = (task.lists || []).find((l) => l !== "master") || "master";
+    return { ...task, list: primaryList };
+  });
+  const { error } = await supabase.from("tasks").upsert(toSave, { onConflict: "id" });
   if (error) console.error("Bulk upsert error:", error);
 }
 
@@ -85,10 +93,8 @@ export async function toggleHabitLog(habitId, date, completed) {
   }
 }
 
-// Calculate streak for a habit
 export async function getHabitStreak(habitId) {
   const today = getToday();
-  // Get last 365 days of logs for this habit
   const yearAgo = new Date();
   yearAgo.setFullYear(yearAgo.getFullYear() - 1);
   const { data, error } = await supabase
@@ -105,7 +111,6 @@ export async function getHabitStreak(habitId) {
   let streak = 0;
   let checkDate = new Date(today);
 
-  // If today isn't completed, start checking from yesterday
   if (!dates.has(today)) {
     checkDate.setDate(checkDate.getDate() - 1);
   }

@@ -3,17 +3,20 @@
 import { useState, useRef, useEffect } from "react";
 import { OPENING_QUOTE, SIGNAL_REMINDER } from "@/lib/constants";
 
+const MAX_DISPLAYED = 50;
+
 export default function ChatPanel({
   chatHistory,
   onSend,
+  onClear,
   isLoading,
 }) {
   const [input, setInput] = useState("");
-  const chatEndRef = useRef(null);
   const inputRef = useRef(null);
+  const messagesEndRef = useRef(null);
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory, isLoading]);
 
   const handleSend = () => {
@@ -22,6 +25,8 @@ export default function ChatPanel({
     setInput("");
     onSend(msg);
   };
+
+  const displayedMessages = chatHistory.slice(-MAX_DISPLAYED);
 
   return (
     <div
@@ -44,12 +49,81 @@ export default function ChatPanel({
           fontSize: 14,
           fontFamily: "'JetBrains Mono', monospace",
           color: "#F59E0B",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
         }}
       >
-        💬 Command Chat
+        <span>💬 Command Chat</span>
+        {onClear && (
+          <button
+            onClick={onClear}
+            style={{
+              background: "#1e293b",
+              border: "1px solid #334155",
+              borderRadius: 6,
+              color: "#94a3b8",
+              fontSize: 11,
+              padding: "4px 10px",
+              cursor: "pointer",
+              fontFamily: "'JetBrains Mono', monospace",
+            }}
+          >
+            Clear
+          </button>
+        )}
       </div>
 
-      {/* Messages */}
+      {/* Input at TOP */}
+      <div
+        style={{
+          padding: 12,
+          borderBottom: "1px solid #1e293b",
+          display: "flex",
+          gap: 8,
+        }}
+      >
+        <input
+          ref={inputRef}
+          className="chat-input"
+          placeholder="Add tasks, check things off, build your time box..."
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+          disabled={isLoading}
+          style={{
+            flex: 1,
+            background: "#0f172a",
+            border: "1px solid #1e293b",
+            borderRadius: 8,
+            padding: "10px 14px",
+            color: "#e2e8f0",
+            fontSize: 13,
+            outline: "none",
+            fontFamily: "'Outfit', sans-serif",
+          }}
+        />
+        <button
+          onClick={handleSend}
+          disabled={isLoading || !input.trim()}
+          style={{
+            background: isLoading || !input.trim() ? "#334155" : "#F59E0B",
+            color: isLoading || !input.trim() ? "#64748b" : "#0a0f1a",
+            border: "none",
+            borderRadius: 8,
+            width: 40,
+            fontSize: 18,
+            fontWeight: 700,
+            cursor:
+              isLoading || !input.trim() ? "not-allowed" : "pointer",
+            fontFamily: "'Outfit', sans-serif",
+          }}
+        >
+          {isLoading ? "..." : "→"}
+        </button>
+      </div>
+
+      {/* Messages flowing downward */}
       <div
         style={{
           flex: 1,
@@ -116,7 +190,7 @@ export default function ChatPanel({
                 "Build my time box for tomorrow",
                 "What's on my radar?",
                 "Add a habit: meditate",
-                "Set call parents days to Wednesday and Saturday",
+                "I wake up at 7am",
               ].map((ex, i) => (
                 <div
                   key={i}
@@ -149,7 +223,7 @@ export default function ChatPanel({
         )}
 
         {/* Messages */}
-        {chatHistory.map((msg, i) => (
+        {displayedMessages.map((msg, i) => (
           <div
             key={i}
             className="animate-slide-in"
@@ -184,7 +258,10 @@ export default function ChatPanel({
                   line.startsWith("🔄") ||
                   line.startsWith("⚡") ||
                   line.startsWith("🔁") ||
-                  line.startsWith("🌅");
+                  line.startsWith("🌅") ||
+                  line.startsWith("🏷️") ||
+                  line.startsWith("⏰") ||
+                  line.startsWith("⚠️");
                 return (
                   <div
                     key={j}
@@ -192,7 +269,7 @@ export default function ChatPanel({
                       isAction
                         ? {
                             fontSize: 12,
-                            color: "#10B981",
+                            color: line.startsWith("⚠️") ? "#EF4444" : "#10B981",
                             fontFamily:
                               "'JetBrains Mono', monospace",
                             padding: "2px 0",
@@ -227,56 +304,7 @@ export default function ChatPanel({
           </div>
         )}
 
-        <div ref={chatEndRef} />
-      </div>
-
-      {/* Input */}
-      <div
-        style={{
-          padding: 12,
-          borderTop: "1px solid #1e293b",
-          display: "flex",
-          gap: 8,
-        }}
-      >
-        <input
-          ref={inputRef}
-          className="chat-input"
-          placeholder="Add tasks, check things off, build your time box..."
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-          disabled={isLoading}
-          style={{
-            flex: 1,
-            background: "#0f172a",
-            border: "1px solid #1e293b",
-            borderRadius: 8,
-            padding: "10px 14px",
-            color: "#e2e8f0",
-            fontSize: 13,
-            outline: "none",
-            fontFamily: "'Outfit', sans-serif",
-          }}
-        />
-        <button
-          onClick={handleSend}
-          disabled={isLoading || !input.trim()}
-          style={{
-            background: isLoading || !input.trim() ? "#334155" : "#F59E0B",
-            color: isLoading || !input.trim() ? "#64748b" : "#0a0f1a",
-            border: "none",
-            borderRadius: 8,
-            width: 40,
-            fontSize: 18,
-            fontWeight: 700,
-            cursor:
-              isLoading || !input.trim() ? "not-allowed" : "pointer",
-            fontFamily: "'Outfit', sans-serif",
-          }}
-        >
-          {isLoading ? "..." : "→"}
-        </button>
+        <div ref={messagesEndRef} />
       </div>
     </div>
   );
